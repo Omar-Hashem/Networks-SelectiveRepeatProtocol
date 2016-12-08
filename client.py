@@ -66,11 +66,12 @@ def get_client_data():
            client_arguments['receiveing_sliding_window_size']
 
 def my_print(percentage, i, num_of_packets, erase):
+    half_percentage = int(percentage / 2)
     to_print = bcolors.OKGREEN
     to_print = to_print + "{0:3d}".format(percentage)
     to_print = to_print + " % Transferred "
-    to_print = to_print + ('#' * percentage)
-    to_print = to_print + ' ' * (100 - percentage)
+    to_print = to_print + ('#' * half_percentage)
+    to_print = to_print + ' ' * (50 - half_percentage)
     to_print = to_print + '| '
     to_print = to_print + "Packet Num : "
     to_print = to_print + "{0:d}".format(i)
@@ -84,9 +85,9 @@ def my_print(percentage, i, num_of_packets, erase):
     else:
         print('')
 
-try:
-    client()
-except Exception:
-    print("Error: OS Forcibly closed connection !")
-    exit(1)
+# try:
+client()
+# except Exception:
+#    print("Error: OS Forcibly closed connection !")
+#    exit(1)
 

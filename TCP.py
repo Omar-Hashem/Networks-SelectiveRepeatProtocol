@@ -13,7 +13,7 @@ AF_INET6 = 6
 _BUFFER_SIZE = 1024
 _MAX_TIMEOUT_ACK_THRESHOLD = 100
 _INITAL_TIME_OUT_INTERVAL = 0.5
-_MAX_QUEUE_SIZE = 200
+_MAX_QUEUE_SIZE = 1000
 _INITIAL_STATE = 0
 
 class socketTCP:
@@ -32,8 +32,8 @@ class socketTCP:
 
         self.condition_lock = threading.Condition()
         self.send_queue = deque()
-        self.buffer_send_base = 0  #
-        self.receive_buffer = [None] * _MAX_QUEUE_SIZE
+        self.buffer_send_base = 0  
+        self.receive_buffer = {}
         self.buffer_receive_base = 0
         self.receive_lock = threading.Condition()  # lock for buffer and counter
         self.counter = 0
@@ -239,15 +239,15 @@ class socketTCP:
     def _rdt_receive_repeative(self):
 
         with self.receive_lock:
-            while self.receive_buffer[self.counter] is None:
+            while self.counter not in self.receive_buffer:
                 self.receive_lock.wait()
 
             data = self.receive_buffer[self.counter]
-            self.receive_buffer[self.counter] = None
+            del self.receive_buffer[self.counter]
+
             self.counter = self.counter + 1
-            if self.counter == _MAX_QUEUE_SIZE:
-                self.counter = 0
-                self.buffer_receive_base = self.buffer_receive_base + _MAX_QUEUE_SIZE
+            self.buffer_receive_base = self.buffer_receive_base + 1 
+
             return data
 
     def _rdt_send_repeative(self, data, dest_ip, dest_port):
@@ -290,9 +290,10 @@ class receive_thread(threading.Thread):
     def receive_data(self, my_packet, address):
         with self.s.receive_lock:
             if my_packet.seq_no >= self.s.buffer_receive_base and my_packet.seq_no <= self.s.buffer_receive_base + _MAX_QUEUE_SIZE - 1:
-                index = my_packet.seq_no - self.s.buffer_receive_base
-                self.s.receive_buffer[index] = my_packet.data
+                self.s.receive_buffer[my_packet.seq_no] = my_packet.data
+
                 self.s.receive_lock.notifyAll()
+
                 self.s.send_ack(5555, my_packet.seq_no, address)
             elif my_packet.seq_no < self.s.buffer_receive_base:
                 self.s.send_ack(5555, my_packet.seq_no, address)
