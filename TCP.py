@@ -13,7 +13,7 @@ AF_INET6 = 6
 _BUFFER_SIZE = 1024
 _MAX_TIMEOUT_ACK_THRESHOLD = 100
 _INITAL_TIME_OUT_INTERVAL = 0.5
-_MAX_QUEUE_SIZE = 1000
+_MAX_QUEUE_SIZE = 10
 _INITIAL_STATE = 0
 
 class socketTCP:
@@ -87,6 +87,11 @@ class socketTCP:
         return (my_packet, address)
 
     def timeout_enhance(self, sample_RTT):
+        # print("Sample RTT:", sample_RTT)
+        # print("Counter:", self.counter)
+        # print("Send base:", self.buffer_send_base)
+        # print("Receive base:", self.buffer_receive_base)
+        
         self.estimated_RTT = (1 - self.alpha) * self.estimated_RTT + self.alpha * sample_RTT
         self.dev_RTT = (1 - self.beta) * self.dev_RTT + self.beta * abs(self.estimated_RTT - sample_RTT)
         self.timeout = self.estimated_RTT + 4 * self.dev_RTT
@@ -173,6 +178,9 @@ class socketTCP:
         # note here
         s.send_state = _INITIAL_STATE
         s.receive_state = _INITIAL_STATE
+        s.counter = _INITIAL_STATE
+        s.buffer_receive_base = _INITIAL_STATE
+        s.buffer_send_base = _INITIAL_STATE
 
         if not isinstance(data, int):
             return (False, s)
@@ -195,7 +203,6 @@ class socketTCP:
         self.send_state = 0
 
         if data == s.port + 1:
-            send_thread(s).start()
             receive_thread(s).start()
             return (True, s)
         else:
@@ -224,8 +231,10 @@ class socketTCP:
 
         self.receive_state = _INITIAL_STATE
         self.send_state = _INITIAL_STATE
+        self.counter = _INITIAL_STATE
+        self.buffer_receive_base = _INITIAL_STATE
+        self.buffer_send_base = _INITIAL_STATE
 
-        send_thread(self).start()
         receive_thread(self).start()
         return True
 
@@ -256,31 +265,30 @@ class socketTCP:
                 self.condition_lock.wait()
 
             data_packet = packet.get_data_packet(5555, self.send_state, data)
-            self.send_queue.append([data_packet, time.time(), dest_ip, dest_port, self.send_state, 0])
+            elem = [data_packet, time.time(), dest_ip, dest_port, self.send_state, 0]
+            self.send_queue.append(elem)
             self._udt_send(pickle.dumps(data_packet), dest_ip, dest_port)
             self.send_state = self.send_state + 1
+
+            timer_thread(self, elem, threading.Event()).start()
 
 
 def make_socket(port, socket_family, loss_probability):
     return socketTCP(port, socket_family, loss_probability)
 
-
-class send_thread(threading.Thread):
-    def __init__(self, s):
+class timer_thread(threading.Thread):
+    def __init__(self, s, elem, event):
         threading.Thread.__init__(self)
         self.s = s
+        self.elem = elem
+        self.stopped = event
 
     def run(self):
-        while True:
-            with self.s.condition_lock:
-                # if self.s.connection_closed: # closing later
-                #    break
-
-                for elem in self.s.send_queue:
-                    if time.time() - elem[1] > self.s.timeout and not elem[5]:
-                        self.s._udt_send(pickle.dumps(elem[0]), elem[2], elem[3])
-                        elem[1] = time.time()  # because elem is reference, this will work
-
+        while not self.stopped.wait(self.s.timeout):
+            if self.elem[5]:
+                self.stopped.set()
+                exit(0)
+            self.s._udt_send(pickle.dumps(self.elem[0]), self.elem[2], self.elem[3])
 
 class receive_thread(threading.Thread):
     def __init__(self, s):
@@ -305,11 +313,15 @@ class receive_thread(threading.Thread):
             if my_packet.ack_no < self.s.buffer_send_base:
                 return
 
-            # I know my send queue must have elemnts !
             index = my_packet.ack_no - self.s.buffer_send_base
-            self.s.send_queue[index][5] = 1
-            sample_RTT = time.time() - self.s.send_queue[index][1]
-            self.s.timeout_enhance(sample_RTT)
+
+            if index > len(self.s.send_queue) or index < 0:
+                return
+
+            if not self.s.send_queue[index][5]:
+                self.s.send_queue[index][5] = 1
+                sample_RTT = time.time() - self.s.send_queue[index][1]
+                self.s.timeout_enhance(sample_RTT)
 
             if my_packet.ack_no == self.s.buffer_send_base:
                 while self.s.send_queue and self.s.send_queue[0][5]:
