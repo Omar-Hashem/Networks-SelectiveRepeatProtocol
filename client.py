@@ -52,6 +52,9 @@ def client():
         
         print("Success: File Reception Completed !")
 
+        print("UDT Receive Count:", s.udt_rcv_cnt)
+        print("UDT Send Count:", s.udt_send_cnt)
+
         s.close()
 
         print("\nStatistics :-")

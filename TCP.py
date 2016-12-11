@@ -1,23 +1,42 @@
 import socket
 
 from validator import isValidPacket
-from collections import deque, OrderedDict
+from collections import deque
 import packet
 import pickle
 import random
 import threading
 import time
 
+# type of destination
 AF_INET = 4
 AF_INET6 = 6
+
+# how man bytes can send/receive accept
 _BUFFER_SIZE = 1024
+
+# if not provided, limits the send/receive queue
+_DEFAULT_MAX_QUEUE_SIZE = 5000
+
+# how many timeouts should I allow without failing
 _MAX_TIMEOUT_ACK_THRESHOLD = 100
+
+# initial timeout
 _INITAL_TIME_OUT_INTERVAL = 0.5
-_MAX_QUEUE_SIZE = 10
+
+# initial congestion control window
+_INITIAL_CWND = 1
+
+# initial send/receive state
 _INITIAL_STATE = 0
 
+# congestion control different states types
+_SLOW_START = 0
+_CONGESTION_AVOIDANCE = 1
+_FAST_RECOVERY = 3
+
 class socketTCP:
-    def __init__(self, port, socket_family, loss_probability):
+    def __init__(self, port, socket_family, loss_probability, max_queue_size, congestion_control):
         self.port = port
         self.socket_family = socket_family
         self.loss_probability = loss_probability
@@ -37,6 +56,21 @@ class socketTCP:
         self.buffer_receive_base = 0
         self.receive_lock = threading.Condition()  # lock for buffer and counter
         self.counter = 0
+
+        # congestion control parameters
+        self.congestion_control = congestion_control
+        self.duplicate_count = 0
+        self.cwnd = _INITIAL_CWND
+        self.congestion_state = _SLOW_START
+        self.slow_threshold = int(max_queue_size / 10) + 1
+
+        # windowing parameters
+        self.max_queue_size = max_queue_size
+
+        if self.congestion_control:
+            self.window_size = min(int(self.cwnd), self.max_queue_size)
+        else:
+            self.window_size = self.max_queue_size
 
         # dynamic timeout parameters
         self.alpha = 0.125
@@ -173,7 +207,7 @@ class socketTCP:
         data, address = self._rdt_receive()
         # data is number x
 
-        s = make_socket(0, self.socket_family, self.loss_probability) 
+        s = make_socket(0, self.socket_family, self.loss_probability, self.max_queue_size, self.congestion_control) 
 
         # note here
         s.send_state = _INITIAL_STATE
@@ -261,7 +295,7 @@ class socketTCP:
 
     def _rdt_send_repeative(self, data, dest_ip, dest_port):
         with self.condition_lock:
-            while len(self.send_queue) == _MAX_QUEUE_SIZE:
+            while len(self.send_queue) == self.window_size:
                 self.condition_lock.wait()
 
             data_packet = packet.get_data_packet(5555, self.send_state, data)
@@ -272,9 +306,57 @@ class socketTCP:
 
             timer_thread(self, elem, threading.Event()).start()
 
+    def _control_congestion(self, timeout=False, new_ack=False):
+        if timeout:
+            try:
+                self.duplicate_count = 0
+                self.slow_threshold = self.cwnd / 2
+                self.cwnd = 1
+                self.congestion_state = _SLOW_START
 
-def make_socket(port, socket_family, loss_probability):
-    return socketTCP(port, socket_family, loss_probability)
+                if min(self.max_queue_size, int(self.cwnd)) != self.window_size:
+                    print(min(self.max_queue_size, int(self.cwnd)))
+
+                self.window_size = min(self.max_queue_size, int(self.cwnd))
+
+                return
+            except Exception:
+                return
+
+        if self.congestion_state == _SLOW_START:
+            if new_ack:
+                self.duplicate_count = 0
+                self.cwnd += 1
+                if self.cwnd >= self.slow_threshold:
+                    self.congestion_state = _CONGESTION_AVOIDANCE
+            elif self.duplicate_count >= 3:
+                self.slow_threshold = self.cwnd / 2
+                self.cwnd = self.slow_threshold + 3
+                self.congestion_state = _FAST_RECOVERY
+
+        elif self.congestion_control == _FAST_RECOVERY:
+            if new_ack:
+                self.cwnd = max(self.slow_threshold, 1)
+                self.duplicate_count = 0
+                self.congestion_state = _CONGESTION_AVOIDANCE
+            else:
+                self.cwnd += 1
+
+        else:  # Congestion avoidance
+            if new_ack:
+                self.cwnd += 1.0 / self.cwnd
+                self.duplicate_count = 0
+            elif self.duplicate_count >= 3:
+                self.slow_threshold = self.cwnd / 2
+                self.cwnd = self.slow_threshold + 3
+
+        if min(self.max_queue_size, int(self.cwnd)) != self.window_size:
+            print(min(self.max_queue_size, int(self.cwnd)))
+
+        self.window_size = min(self.max_queue_size, int(self.cwnd))
+
+def make_socket(port, socket_family, loss_probability, max_queue_size=_DEFAULT_MAX_QUEUE_SIZE, congestion_control=True):
+    return socketTCP(port, socket_family, loss_probability, max_queue_size, congestion_control)
 
 class timer_thread(threading.Thread):
     def __init__(self, s, elem, event):
@@ -282,13 +364,19 @@ class timer_thread(threading.Thread):
         self.s = s
         self.elem = elem
         self.stopped = event
+        self.cnt = 0
 
     def run(self):
         while not self.stopped.wait(self.s.timeout):
-            if self.elem[5]:
+            if self.elem[5] or self.cnt == _MAX_TIMEOUT_ACK_THRESHOLD:
                 self.stopped.set()
                 exit(0)
             self.s._udt_send(pickle.dumps(self.elem[0]), self.elem[2], self.elem[3])
+            self.cnt += 1
+
+            if self.s.congestion_control:
+                self.s._control_congestion(timeout=True)
+
 
 class receive_thread(threading.Thread):
     def __init__(self, s):
@@ -297,7 +385,7 @@ class receive_thread(threading.Thread):
 
     def receive_data(self, my_packet, address):
         with self.s.receive_lock:
-            if my_packet.seq_no >= self.s.buffer_receive_base and my_packet.seq_no <= self.s.buffer_receive_base + _MAX_QUEUE_SIZE - 1:
+            if my_packet.seq_no >= self.s.buffer_receive_base and my_packet.seq_no <= self.s.buffer_receive_base + self.s.max_queue_size - 1:
                 self.s.receive_buffer[my_packet.seq_no] = my_packet.data
 
                 self.s.receive_lock.notifyAll()
@@ -311,17 +399,28 @@ class receive_thread(threading.Thread):
     def receive_ack(self, my_packet, address):
         with self.s.condition_lock:
             if my_packet.ack_no < self.s.buffer_send_base:
+                if self.s.congestion_control:
+                    self.s.duplicate_count += 1
+                    self.s._control_congestion()
                 return
 
             index = my_packet.ack_no - self.s.buffer_send_base
 
-            if index > len(self.s.send_queue) or index < 0:
+            if index > len(self.s.send_queue):  # case of erroneous packet
                 return
 
             if not self.s.send_queue[index][5]:
                 self.s.send_queue[index][5] = 1
                 sample_RTT = time.time() - self.s.send_queue[index][1]
                 self.s.timeout_enhance(sample_RTT)
+
+                if self.s.congestion_control:
+                    self.s._control_congestion(new_ack=True)
+
+            else:
+                if self.s.congestion_control:
+                    self.s.duplicate_count += 1
+                    self.s._control_congestion()
 
             if my_packet.ack_no == self.s.buffer_send_base:
                 while self.s.send_queue and self.s.send_queue[0][5]:
@@ -333,7 +432,10 @@ class receive_thread(threading.Thread):
     def run(self):
         while True:
             if self.s.connection_closed:
-                break
+                with self.s.condition_lock:
+                    if not self.s.send_queue:
+                        self.s.socket.close()
+                        break
 
             try:
                 my_packet, address = self.s._udt_receive()

@@ -27,6 +27,9 @@ class serverThread(threading.Thread):
                 self.serverSocket.send(data)
 
             # print(self.serverSocket.estimated_RTT + self.serverSocket.estimated_RTT * 4)
+            # 
+            print("UDT Receive Count:", self.serverSocket.udt_rcv_cnt)
+            print("UDT Send Count:", self.serverSocket.udt_send_cnt)
 
             self.serverSocket.close()
         except Exception as e:
@@ -49,8 +52,11 @@ def server():
     random_generate_seed_value,         \
     loss_probability = get_server_data()
 
-    tcp_socket = TCP.make_socket(int(server_port_number), TCP.AF_INET, float(loss_probability))
+    w = int(sending_sliding_window_size)
+
+    tcp_socket = TCP.make_socket(int(server_port_number), TCP.AF_INET, float(loss_probability), w, True)
     print(tcp_socket.loss_probability)
+
     if not tcp_socket.bind():
         print("Error : Cannot bind a busy port !")
         exit()
@@ -64,6 +70,7 @@ def server():
 
 try:
     server()
-except Exception:
+except Exception as e:
+    print(e)
     print("Error: client side terminated or OS closed connection forcibly !")
     exit(1)
