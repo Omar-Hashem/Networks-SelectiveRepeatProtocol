@@ -19,11 +19,14 @@ def client():
     if not s.bind():
         print(bcolors.FAIL + "error : please change port number [ port busy ] " + bcolors.ENDC)
         exit(1)
-        
-    if server_ip == "localhost":
-        s.connect(socket.gethostname(), int(server_port_number))
-    else:
-        s.connect(server_ip, int(server_port_number))
+    
+    connected = False
+
+    while not connected:
+        if server_ip == "localhost":
+            connected = s.connect(socket.gethostname(), int(server_port_number))
+        else:
+            connected = s.connect(server_ip, int(server_port_number))
 
     s.send(file_name)
     data = s.receive()
@@ -52,14 +55,13 @@ def client():
         
         print("Success: File Reception Completed !")
 
-        print("UDT Receive Count:", s.udt_rcv_cnt)
-        print("UDT Send Count:", s.udt_send_cnt)
-
         s.close()
 
         print("\nStatistics :-")
         print("Reception Time =", "{0:.2f}".format(reception_time), "Sec")
-        print("Average Speed =", "{0:.2f}".format(num_of_packets / reception_time), "Packets/Sec")
+        print("Average Throughput =", "{0:.2f}".format(num_of_packets / reception_time), "Packets/Sec")
+        print("UDT Receive Count:", s.udt_rcv_cnt)
+        print("UDT Send Count:", s.udt_send_cnt)
 
 
 def get_client_data():

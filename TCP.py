@@ -16,10 +16,10 @@ AF_INET6 = 6
 _BUFFER_SIZE = 1024
 
 # if not provided, limits the send/receive queue
-_DEFAULT_MAX_QUEUE_SIZE = 5000
+_DEFAULT_MAX_QUEUE_SIZE = 1000
 
 # how many timeouts should I allow without failing
-_MAX_TIMEOUT_ACK_THRESHOLD = 100
+_MAX_TIMEOUT_ACK_THRESHOLD = 20
 
 # initial timeout
 _INITAL_TIME_OUT_INTERVAL = 0.5
@@ -28,7 +28,7 @@ _INITAL_TIME_OUT_INTERVAL = 0.5
 _INITIAL_CWND = 1
 
 # initial send/receive state
-_INITIAL_STATE = 0
+_INITIAL_STATE = 10
 
 # congestion control different states types
 _SLOW_START = 0
@@ -48,6 +48,7 @@ class socketTCP:
         self.dest_addr = 0  # to be setted by address/connect (IP,Port)
         self.number_of_receivers = 100
         self.connection_closed = False
+        self.closing_finished = False
 
         self.condition_lock = threading.Condition()
         self.send_queue = deque()
@@ -62,7 +63,8 @@ class socketTCP:
         self.duplicate_count = 0
         self.cwnd = _INITIAL_CWND
         self.congestion_state = _SLOW_START
-        self.slow_threshold = int(max_queue_size / 10) + 1
+        self.slow_threshold = int(max_queue_size / 2) + 1
+        self.analysis_queue = []
 
         # windowing parameters
         self.max_queue_size = max_queue_size
@@ -121,10 +123,6 @@ class socketTCP:
         return (my_packet, address)
 
     def timeout_enhance(self, sample_RTT):
-        # print("Sample RTT:", sample_RTT)
-        # print("Counter:", self.counter)
-        # print("Send base:", self.buffer_send_base)
-        # print("Receive base:", self.buffer_receive_base)
         
         self.estimated_RTT = (1 - self.alpha) * self.estimated_RTT + self.alpha * sample_RTT
         self.dev_RTT = (1 - self.beta) * self.dev_RTT + self.beta * abs(self.estimated_RTT - sample_RTT)
@@ -277,7 +275,11 @@ class socketTCP:
 
     def close(self):
         self.connection_closed = True
-        # self.socket.close()
+
+        while not self.closing_finished:
+            time.sleep(self.timeout)
+
+        time.sleep(self.timeout * 2)
 
     def _rdt_receive_repeative(self):
 
@@ -295,7 +297,7 @@ class socketTCP:
 
     def _rdt_send_repeative(self, data, dest_ip, dest_port):
         with self.condition_lock:
-            while len(self.send_queue) == self.window_size:
+            while len(self.send_queue) >= self.window_size:
                 self.condition_lock.wait()
 
             data_packet = packet.get_data_packet(5555, self.send_state, data)
@@ -315,7 +317,7 @@ class socketTCP:
                 self.congestion_state = _SLOW_START
 
                 if min(self.max_queue_size, int(self.cwnd)) != self.window_size:
-                    print(min(self.max_queue_size, int(self.cwnd)))
+                    self.analysis_queue += [[self.buffer_send_base, min(self.max_queue_size, int(self.cwnd))]]
 
                 self.window_size = min(self.max_queue_size, int(self.cwnd))
 
@@ -351,7 +353,7 @@ class socketTCP:
                 self.cwnd = self.slow_threshold + 3
 
         if min(self.max_queue_size, int(self.cwnd)) != self.window_size:
-            print(min(self.max_queue_size, int(self.cwnd)))
+            self.analysis_queue += [[self.buffer_send_base, min(self.max_queue_size, int(self.cwnd))]]
 
         self.window_size = min(self.max_queue_size, int(self.cwnd))
 
@@ -435,6 +437,7 @@ class receive_thread(threading.Thread):
                 with self.s.condition_lock:
                     if not self.s.send_queue:
                         self.s.socket.close()
+                        self.s.closing_finished = True
                         break
 
             try:

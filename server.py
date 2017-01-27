@@ -4,6 +4,7 @@ import read_files
 import sys
 import os
 import math
+import analysis
 
 _BUFFER_SIZE = 400
 
@@ -26,12 +27,11 @@ class serverThread(threading.Thread):
                 data = file.read(_BUFFER_SIZE)
                 self.serverSocket.send(data)
 
-            # print(self.serverSocket.estimated_RTT + self.serverSocket.estimated_RTT * 4)
-            # 
-            print("UDT Receive Count:", self.serverSocket.udt_rcv_cnt)
-            print("UDT Send Count:", self.serverSocket.udt_send_cnt)
-
             self.serverSocket.close()
+
+            if self.serverSocket.congestion_control:
+                analysis.plot_congestion_control(self.serverSocket.analysis_queue)
+
         except Exception as e:
             self.serverSocket.send("error")
 
@@ -55,7 +55,8 @@ def server():
     w = int(sending_sliding_window_size)
 
     tcp_socket = TCP.make_socket(int(server_port_number), TCP.AF_INET, float(loss_probability), w, True)
-    print(tcp_socket.loss_probability)
+    print("PLP :", tcp_socket.loss_probability)
+    print("")
 
     if not tcp_socket.bind():
         print("Error : Cannot bind a busy port !")
@@ -69,7 +70,8 @@ def server():
             serverThread(s).start()
 
 try:
-    server()
+    if __name__ == '__main__':
+        server()
 except Exception as e:
     print(e)
     print("Error: client side terminated or OS closed connection forcibly !")
